@@ -20,7 +20,7 @@ Controls the Popur S7 via LAN (preferred) and cloud (fallback/settings/pets). Bu
 ## Features
 
 - **Local-first** — LAN control over TCP:6668 (Tuya protocol 3.5); routine polling never touches Tuya's servers
-- **Real-time events** — MQTT push for instant state updates (cat left, bin full, cleaning started)
+- **Real-time events** — MQTT push for instant state updates and event entities for activity, faults and pet visits
 - **Pet tracking** — per-pet weight, visit duration, and last-visit sensors
 - **Full entity coverage** — 18 sensors, 5 binary sensors, 19 switches, 14 buttons, 3 selects, 5 numbers per device
 - **Cloud fallback** — automatic fallback to cloud APIs when LAN is unreachable; settings DPs and pet data always via cloud
