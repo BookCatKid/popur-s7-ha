@@ -1,14 +1,5 @@
 {
   "name": "Popur S7",
-  "domains": [
-    "binary_sensor",
-    "button",
-    "event",
-    "number",
-    "select",
-    "sensor",
-    "switch"
-  ],
   "homeassistant": "2026.8.0",
   "render_readme": true,
   "content_in_root": false,
