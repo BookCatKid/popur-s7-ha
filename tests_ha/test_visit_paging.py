@@ -69,7 +69,7 @@ async def test_first_fetch_reads_one_page(
         OTHER_PET_ID: OTHER_SEEN_MS,
     }
     assert er.async_get(hass).async_get_entity_id(
-        "event", "popur", f"pet_{OTHER_PET_ID}_visit"
+        "event", "popur_s7", f"pet_{OTHER_PET_ID}_visit"
     )
 
 

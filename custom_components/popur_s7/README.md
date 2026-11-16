@@ -37,7 +37,7 @@ Controls the Popur S7 via LAN (preferred) and cloud (fallback/settings/pets). Bu
 
 ```bash
 pip install pypopur
-cp -r custom_components/popur /config/custom_components/
+cp -r custom_components/popur_s7 /config/custom_components/
 ```
 
 Restart Home Assistant, then add the integration.
@@ -84,7 +84,7 @@ Last measured weight, last visit duration, last visit timestamp.
 
 ### Event entities
 
-Event entities keep the last event type and its attributes; Home Assistant records the time it was received. They fire **only on live events**: activity and faults come from MQTT pushes, visits from newly fetched cloud records. Polling, the first load and MQTT reconnects never fire them, so an event missed while MQTT was down is not replayed.
+Event entities keep the last event type and its attributes; Home Assistant records the time it was received. They fire **only on live events**: activity and faults come from MQTT pushes, visits from newly fetched cloud records. Polled datapoint snapshots, the first load and MQTT reconnects do not replay activity or fault events. Pet visit events are emitted for newly discovered records after the initial baseline, including during periodic cloud refreshes.
 
 | Entity | Unique ID | Event types | Attributes |
 |--------|-----------|-------------|------------|

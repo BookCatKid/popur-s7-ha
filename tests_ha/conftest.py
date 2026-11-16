@@ -108,6 +108,7 @@ class FakePopur:
             ]
         )
         self.account.device_dps = AsyncMock(return_value={})
+        self.account.firmware_info = AsyncMock(return_value=[])
         self.pets: list[Pet] = [Pet.from_json({"id": PET_ID, "name": "Minou"})]
         self.account.pets = AsyncMock(side_effect=lambda *_a, **_k: list(self.pets))
         self.account.pet_records = AsyncMock(side_effect=self._records)

@@ -29,7 +29,7 @@ def popur() -> FakePopur:
 async def test_no_visit_on_first_successful_load(
     hass: HomeAssistant, popur: FakePopur, setup_entry
 ) -> None:
-    visit_id = er.async_get(hass).async_get_entity_id("event", "popur", f"pet_{PET_ID}_visit")
+    visit_id = er.async_get(hass).async_get_entity_id("event", "popur_s7", f"pet_{PET_ID}_visit")
     assert visit_id is not None
     coordinator = setup_entry.runtime_data.coordinator
 

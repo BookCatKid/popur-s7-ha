@@ -7,6 +7,7 @@ import asyncio
 import pytest
 from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.popur_s7.const import PET_VISITS_PENDING_MAX
@@ -18,7 +19,7 @@ OTHER_PET_ID = 8
 
 
 def _visit_entity(hass: HomeAssistant, pet_id: int) -> str | None:
-    return er.async_get(hass).async_get_entity_id("event", "popur", f"pet_{pet_id}_visit")
+    return er.async_get(hass).async_get_entity_id("event", "popur_s7", f"pet_{pet_id}_visit")
 
 
 @pytest.fixture
@@ -176,6 +177,13 @@ async def test_pet_added_later_gets_a_visit_entity(
     await _slow_refresh(hass, coordinator)
     entity_id = _visit_entity(hass, OTHER_PET_ID)
     assert entity_id is not None
+    registry = er.async_get(hass)
+    devices = dr.async_get(hass)
+    parent = devices.async_get_device_by_identifier(
+        ("popur_s7", DEV_ID), setup_entry.entry_id
+    )
+    assert parent is not None
+    assert devices.async_get(registry.async_get(entity_id).device_id).via_device_id == parent.id
 
     popur.records.append(make_record(BASE_TIME_MS + 60_000, pet_id=OTHER_PET_ID))
     await _slow_refresh(hass, coordinator)
@@ -371,11 +379,11 @@ async def test_non_visit_refresh_preserves_sensor_values_until_next_visit(
 ) -> None:
     coordinator = setup_entry.runtime_data.coordinator
     registry = er.async_get(hass)
-    weight_id = registry.async_get_entity_id("sensor", "popur", f"pet_{PET_ID}_last_weight")
+    weight_id = registry.async_get_entity_id("sensor", "popur_s7", f"pet_{PET_ID}_last_weight")
     duration_id = registry.async_get_entity_id(
-        "sensor", "popur", f"pet_{PET_ID}_last_visit_duration"
+        "sensor", "popur_s7", f"pet_{PET_ID}_last_visit_duration"
     )
-    time_id = registry.async_get_entity_id("sensor", "popur", f"pet_{PET_ID}_last_visit")
+    time_id = registry.async_get_entity_id("sensor", "popur_s7", f"pet_{PET_ID}_last_visit")
     assert weight_id is not None and duration_id is not None and time_id is not None
 
     popur.records.append(make_record(BASE_TIME_MS + 60_000, weight=4300, duration=45))

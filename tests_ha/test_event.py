@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from pypopur.activity import ACTIVITY_EVENT_TYPES, FAULT_EVENT_TYPES
@@ -17,7 +18,7 @@ pytestmark = pytest.mark.usefixtures("setup_entry")
 
 
 def _entity_id(hass: HomeAssistant, unique_id: str) -> str:
-    entity_id = er.async_get(hass).async_get_entity_id("event", "popur", unique_id)
+    entity_id = er.async_get(hass).async_get_entity_id("event", "popur_s7", unique_id)
     assert entity_id is not None, unique_id
     return entity_id
 
@@ -67,6 +68,21 @@ async def test_entities_created(hass: HomeAssistant, activity_id, fault_id, visi
     # First load of pet records is history, not an event.
     assert hass.states.get(visit_id).state == STATE_UNKNOWN
     assert er.async_get(hass).async_get(fault_id).entity_category == "diagnostic"
+
+
+async def test_visit_entity_shares_existing_pet_device(
+    hass: HomeAssistant, activity_id, visit_id
+) -> None:
+    registry = er.async_get(hass)
+    devices = dr.async_get(hass)
+    visit = registry.async_get(visit_id)
+    activity = registry.async_get(activity_id)
+    weight_id = registry.async_get_entity_id(
+        "sensor", "popur_s7", f"pet_{PET_ID}_last_weight"
+    )
+    assert weight_id is not None
+    assert visit.device_id == registry.async_get(weight_id).device_id
+    assert devices.async_get(visit.device_id).via_device_id == activity.device_id
 
 
 async def test_mqtt_dp22_triggers_activity(

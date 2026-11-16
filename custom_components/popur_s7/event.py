@@ -13,13 +13,14 @@ from typing import Any
 from homeassistant.components.event import EventEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from pypopur.activity import ACTIVITY_EVENT_TYPES, FAULT_EVENT_TYPES, ActivityEvent
 
 from . import PopurConfigEntry
-from .const import EVENT_TYPE_VISIT_RECORDED, signal_device_event
+from .const import DOMAIN, EVENT_TYPE_VISIT_RECORDED, signal_device_event
 from .entity import PopurEntity, PopurPetEntity
 
 
@@ -58,8 +59,12 @@ async def async_setup_entry(
         if not new_pets:
             return
         known_pets.update(new_pets)
+        parent = dr.async_get(hass).async_get_device_by_identifier(
+            (DOMAIN, pet_device.device_id), entry.entry_id
+        )
+        via_device_id = parent.id if parent is not None else None
         async_add_entities(
-            PopurPetVisitEvent(coordinator, pet_device, pet_id)
+            PopurPetVisitEvent(coordinator, pet_device, pet_id, via_device_id)
             for pet_id in new_pets
         )
 
@@ -117,8 +122,8 @@ class PopurPetVisitEvent(PopurPetEntity, EventEntity):
 
     _attr_translation_key = "pet_visit"
 
-    def __init__(self, coordinator, device, pet_id) -> None:
-        super().__init__(coordinator, device, pet_id)
+    def __init__(self, coordinator, device, pet_id, via_device_id=None) -> None:
+        super().__init__(coordinator, device, pet_id, via_device_id)
         self._attr_event_types = [EVENT_TYPE_VISIT_RECORDED]
         self._attr_unique_id = f"pet_{pet_id}_visit"
         if coordinator.data is not None:
