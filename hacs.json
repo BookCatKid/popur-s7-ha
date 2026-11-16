@@ -3,12 +3,13 @@
   "domains": [
     "binary_sensor",
     "button",
+    "event",
     "number",
     "select",
     "sensor",
     "switch"
   ],
-  "homeassistant": "2024.1.0",
+  "homeassistant": "2026.8.0",
   "render_readme": true,
   "content_in_root": false,
   "zip_release": false
