@@ -438,3 +438,78 @@ async def test_repeated_refreshes_do_not_replay_or_modify_visit_event(
     assert final_state.attributes == first_state.attributes
     assert [attrs["weight_g"] for _, attrs in visits] == [4400]
     assert coordinator._seen_record_time[PET_ID] == BASE_TIME_MS + 60_000
+
+
+
+async def test_delayed_fetch_retries_once_on_cloud_failure(
+    hass: HomeAssistant, popur: FakePopur, setup_entry, visits
+) -> None:
+    coordinator = setup_entry.runtime_data.coordinator
+    popur.push({22: "cat_left"})
+    await hass.async_block_till_done()
+    fetch = popur.account.pet_records.side_effect
+    popur.account.pet_records.side_effect = RuntimeError("temporary cloud failure")
+
+    await _run_scheduled_record_fetch(hass, coordinator)
+
+    assert coordinator._record_fetch_attempt == 1
+    assert coordinator._record_fetch_timer is not None
+    assert visits == []
+
+    popur.account.pet_records.side_effect = fetch
+    popur.records.append(make_record(BASE_TIME_MS + 60_000, weight=4200))
+    await _run_scheduled_record_fetch(hass, coordinator)
+
+    assert coordinator._record_fetch_attempt == 2
+    assert coordinator._record_fetch_timer is None
+    assert [attrs["weight_g"] for _, attrs in visits] == [4200]
+
+
+async def test_delayed_fetch_stops_after_second_failure(
+    hass: HomeAssistant, popur: FakePopur, setup_entry
+) -> None:
+    coordinator = setup_entry.runtime_data.coordinator
+    popur.push({22: "cat_left"})
+    await hass.async_block_till_done()
+    popur.account.pet_records.side_effect = RuntimeError("cloud unavailable")
+
+    await _run_scheduled_record_fetch(hass, coordinator)
+    await _run_scheduled_record_fetch(hass, coordinator)
+
+    assert coordinator._record_fetch_attempt == 2
+    assert coordinator._record_fetch_timer is None
+
+
+async def test_delayed_fetch_updates_sensors_after_local_refresh(
+    hass: HomeAssistant, popur: FakePopur, setup_entry, visits
+) -> None:
+    coordinator = setup_entry.runtime_data.coordinator
+    started, release = asyncio.Event(), asyncio.Event()
+    fetch = popur.account.pet_records.side_effect
+
+    async def _slow(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    popur.account.pet_records.side_effect = _slow
+    popur.records.append(make_record(BASE_TIME_MS + 60_000, weight=4400))
+    coordinator._start_record_fetch()
+    await started.wait()
+    try:
+        old_data = coordinator.data
+        popur.client.raw_dps[125] = 1
+        await coordinator.async_refresh()
+        assert coordinator.data is not old_data
+        assert coordinator.data.snapshots[DEV_ID].raw_dps[125] == 1
+    finally:
+        release.set()
+    await hass.async_block_till_done()
+
+    assert coordinator.data.snapshots[DEV_ID].raw_dps[125] == 1
+    assert coordinator.data.pet_visits[PET_ID].weight_grams == 4400
+    weight_id = er.async_get(hass).async_get_entity_id(
+        "sensor", "popur_s7", f"pet_{PET_ID}_last_weight"
+    )
+    assert float(hass.states.get(weight_id).state) == 4.4
+    assert [attrs["weight_g"] for _, attrs in visits] == [4400]

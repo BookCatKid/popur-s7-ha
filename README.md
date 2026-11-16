@@ -96,6 +96,8 @@ The activity entity fires on every activity report, even when the same type repe
 
 Example automation with the `event.received` trigger:
 
+Replace the example entity IDs below with the actual entity IDs from your Home Assistant installation.
+
 ```yaml
 - alias: "Litter box: notify when the drawer is full"
   triggers:

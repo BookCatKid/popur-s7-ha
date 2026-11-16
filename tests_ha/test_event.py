@@ -199,3 +199,32 @@ async def test_slow_tier_fires_visit_only_for_new_records(
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert [t for t, _ in _of(fired, visit_id)] == ["visit_recorded"]
+
+
+
+async def test_polling_does_not_override_mqtt_fault_baseline(
+    hass: HomeAssistant, popur: FakePopur, setup_entry, fired, fault_id, freezer
+) -> None:
+    coordinator = setup_entry.runtime_data.coordinator
+
+    # Poll observes the new mask before MQTT delivers the fault notification.
+    popur.client.raw_dps[125] = 1
+    await coordinator.async_refresh()
+    assert _of(fired, fault_id) == []
+
+    popur.push({125: 1})
+    await hass.async_block_till_done()
+    assert [t for t, _ in _of(fired, fault_id)] == ["fault_detected"]
+
+    # A stale polling snapshot must not cause a duplicate MQTT fault event.
+    popur.client.raw_dps[125] = 0
+    await coordinator.async_refresh()
+    freezer.tick(timedelta(seconds=1))
+    popur.push({125: 1})
+    await hass.async_block_till_done()
+    assert [t for t, _ in _of(fired, fault_id)] == ["fault_detected"]
+
+    freezer.tick(timedelta(seconds=1))
+    popur.push({125: 0})
+    await hass.async_block_till_done()
+    assert [t for t, _ in _of(fired, fault_id)] == ["fault_detected", "fault_cleared"]

@@ -98,6 +98,8 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         self.install_id: str = ""
         self.firmware_versions: dict[str, str | None] = {}
         self._shadow_dps: dict[str, dict[int, Any]] = {}
+        # Seed once from polling; thereafter only live MQTT changes this baseline.
+        self._mqtt_fault_masks: dict[str, Any] = {}
         self._next_cloud_refresh = 0.0
         self._record_fetch_timer: asyncio.TimerHandle | None = None
         self._record_fetch_task: asyncio.Task[None] | None = None
@@ -163,6 +165,9 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
                 time.monotonic() + CLOUD_REFRESH_INTERVAL.total_seconds()
             )
             await self._async_refresh_cloud(data)
+        for dev_id, snapshot in data.snapshots.items():
+            if 125 in snapshot.raw_dps:
+                self._mqtt_fault_masks.setdefault(dev_id, snapshot.raw_dps[125])
         return data
 
     async def _async_refresh_cloud(self, data: PopurRuntimeData) -> None:
@@ -422,21 +427,28 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         )
 
     async def _fetch_pet_records(self) -> None:
-        """Fetch records ~45 s after cat_left; retry once if no new visit."""
+        """Fetch records ~45 s after cat_left; retry once on failure or no visit."""
 
         if self.data is None:
             return
         self._record_fetch_attempt += 1
+        data = PopurRuntimeData()
         try:
-            new = await self._refresh_pet_data(self.data)
+            new = await self._refresh_pet_data(data)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("delayed pet record fetch failed: %s", err)
+            if self._record_fetch_attempt < 2:
+                self._arm_record_fetch()
             return
+
+        # A local refresh may have replaced self.data during the cloud fetch.
+        # Keep its device snapshots and apply the newly fetched pet data.
+        self.data.pets = data.pets
+        self.data.pet_visits = data.pet_visits
+        self.async_set_updated_data(self.data)
         if not new and self._record_fetch_attempt < 2:
             # Record hasn't landed in the cloud yet — retry once.
             self._arm_record_fetch()
-            return
-        self.async_set_updated_data(self.data)
 
     def request_refresh(self) -> None:
         """Thread-safe refresh trigger (MQTT (re)connect resync)."""
@@ -454,7 +466,13 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
             return
         old = self.data.snapshots.get(dev_id)
         previous_raw = dict(old.raw_dps) if old else {}
-        events = extract_activity_events(dps, previous_raw)
+        event_baseline = (
+            {125: self._mqtt_fault_masks[dev_id]}
+            if dev_id in self._mqtt_fault_masks else {}
+        )
+        events = extract_activity_events(dps, event_baseline)
+        if 125 in dps:
+            self._mqtt_fault_masks[dev_id] = dps[125]
         received_at = dt_util.utcnow()
 
         merged = dict(previous_raw)
