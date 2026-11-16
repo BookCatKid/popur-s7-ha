@@ -12,7 +12,6 @@
   <a href="https://github.com/BookCatKid/popur-s7-ha"><img src="https://img.shields.io/badge/GitHub-BookCatKid%2Fpopur--s7--ha-blue" alt="GitHub"></a>
   <a href="https://pypi.org/project/pypopur/"><img src="https://img.shields.io/pypi/v/pypopur" alt="PyPI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-orange.svg" alt="HACS"></a>
 </p>
 
 Controls the Popur S7 via LAN (preferred) and cloud (fallback/settings/pets). Built on [`pypopur`](https://github.com/BookCatKid/pypopur).
@@ -26,12 +25,16 @@ Controls the Popur S7 via LAN (preferred) and cloud (fallback/settings/pets). Bu
 - **Cloud fallback** — automatic fallback to cloud APIs when LAN is unreachable; settings DPs and pet data always via cloud
 - **Auto-discovery** — finds the S7 on the LAN via ARP MAC match + port scan; optional explicit host override
 
-## Install via HACS
+<!-- ha-marketplace:exclude-start -->
+## Install via Marketplace or HACS
 
-1. Add `https://github.com/BookCatKid/popur-s7-ha` as a **custom repository** in HACS (type: **Integration**)
-2. Install "Popur S7"
-3. Restart Home Assistant
-4. **Settings → Devices & Services → Add Integration → Popur S7**
+Once Popur S7 is listed in the catalog:
+
+**Home Assistant 2026.11 or later:** Open **Settings → Marketplace**, search for **Popur S7**, select **Install**, and follow the setup flow.
+
+**Home Assistant 2026.8–2026.10:** Search for **Popur S7** in HACS and install it. Restart Home Assistant, then add **Popur S7** under **Settings → Devices & services → Add integration**.
+
+[![Open Popur S7 in Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=BookCatKid&repository=popur-s7-ha&category=integration)
 
 ## Install manually
 
@@ -41,6 +44,8 @@ cp -r custom_components/popur_s7 /config/custom_components/
 ```
 
 Restart Home Assistant, then add the integration.
+
+<!-- ha-marketplace:exclude-end -->
 
 ## Configuration
 

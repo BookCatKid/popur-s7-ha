@@ -1,6 +1,7 @@
 {
   "domain": "popur_s7",
   "name": "Popur S7",
+  "categories": ["pets"],
   "codeowners": [
     "@BookCatKid"
   ],
