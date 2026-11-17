@@ -110,3 +110,44 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication when the stored credentials are rejected."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate a new password for the existing Popur account."""
+        entry = self._get_reauth_entry()
+        email = entry.data[CONF_EMAIL]
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            password = user_input[CONF_PASSWORD]
+            api = ThingMobileApi(
+                MobileAppProfile.bundled_popur_app2(),
+                install_id=entry.data[CONF_INSTALL_ID],
+            )
+            account = PopurAccount(api)
+            try:
+                session = await account.login(email, password)
+            except MobileAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Popur login failed")
+                errors["base"] = "cannot_connect"
+            else:
+                await self.async_set_unique_id(session.uid or email)
+                self._abort_if_unique_id_mismatch()
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_PASSWORD: password}
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): cv.string}),
+            description_placeholders={"email": email},
+            errors=errors,
+        )
