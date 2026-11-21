@@ -104,6 +104,7 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         self._record_fetch_timer: asyncio.TimerHandle | None = None
         self._record_fetch_task: asyncio.Task[None] | None = None
         self._record_fetch_attempt = 0
+        self._mqtt_reconnect_task: asyncio.Task[None] | None = None
         # Pet records are fetched by both the slow tier and the delayed
         # post-``cat_left`` fetch; the lock serializes them so one record
         # is never dispatched twice.
@@ -153,6 +154,8 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         data.mqtt_connected = bool(
             self.events is not None and self.events.connected
         )
+        if self.events is not None and not data.mqtt_connected:
+            self._kick_mqtt_reconnect()
 
         # Cloud tier: carry forward previous cloud-side state, refresh on
         # the slow cadence so routine polling stays off Popur's servers.
@@ -169,6 +172,37 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
             if 125 in snapshot.raw_dps:
                 self._mqtt_fault_masks.setdefault(dev_id, snapshot.raw_dps[125])
         return data
+
+    def _kick_mqtt_reconnect(self) -> None:
+        """Retry a down MQTT session from the polling tick.
+
+        pypopur 0.1.3 retries once after a link loss and then never again,
+        and nothing retries a session whose first connect failed, so pushes
+        would stop for good. ``events.connect()`` reconnects and
+        re-SUBSCRIBEs; one attempt runs at a time, in the background, so
+        the refresh is never held up by the TLS handshake."""
+
+        if self._mqtt_reconnect_task is not None and not self._mqtt_reconnect_task.done():
+            return
+        _LOGGER.debug("Popur MQTT down, reconnecting")
+        self._mqtt_reconnect_task = self.hass.async_create_background_task(
+            self._async_reconnect_events(self.events), "popur mqtt reconnect"
+        )
+
+    async def _async_reconnect_events(self, events: Any) -> None:
+        if events is None or self.events is not events:
+            return  # unloaded or replaced meanwhile
+        try:
+            await events.connect()
+        except Exception as err:  # noqa: BLE001 — retried on the next tick
+            _LOGGER.debug("Popur MQTT reconnect failed: %s", err)
+            return
+        if self.events is not events:
+            # The entry unloaded during the handshake: do not leave this
+            # session running behind it.
+            await async_close_events(events)
+            return
+        _LOGGER.debug("Popur MQTT reconnected")
 
     async def _async_refresh_cloud(self, data: PopurRuntimeData) -> None:
         """Slow tier: device DP shadow + pets + latest usage records."""
@@ -499,3 +533,34 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         }
         _LOGGER.debug("Popur %s event %s: %s", dev_id, event.event_type, attrs)
         async_dispatcher_send(self.hass, signal_device_event(dev_id), event, attrs)
+
+
+async def async_close_events(events: Any) -> None:
+    """Close an MQTT session and drop it from pypopur's shared manager."""
+
+    try:
+        await events.close()
+    except Exception:  # noqa: BLE001 — closing is best-effort
+        _LOGGER.debug("Popur MQTT close failed", exc_info=True)
+    detach_events(events)
+
+
+def detach_events(events: Any) -> None:
+    """Drop this session's state from pypopur's process-wide MQTT manager.
+
+    ``MqttServerManager`` is a singleton per tag that outlives the config
+    entry. pypopur 0.1.3 leaves this entry's topics marked subscribed and
+    its listener registered after ``close()``, so after a reload the new
+    session never SUBSCRIBEs and receives no push at all. Harmless once
+    pypopur cleans up on close itself.
+
+    TODO: remove once the pypopur requirement includes that cleanup."""
+
+    manager = getattr(events, "manager", None)
+    if manager is None:
+        return
+    listener = getattr(events, "listener", None)
+    if listener in manager.message_listeners:
+        manager.message_listeners.remove(listener)
+    for topic in list(getattr(events, "_subscriptions", ())):
+        manager.mark_unsubscribe(topic)

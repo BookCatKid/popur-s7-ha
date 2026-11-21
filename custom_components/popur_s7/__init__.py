@@ -26,7 +26,7 @@ from pypopur.mobile import (
 from pypopur.transport import FallbackTransport, PopurTransport
 
 from .const import CONF_HOST, CONF_INSTALL_ID, DOMAIN, LOCAL_REFRESH_INTERVAL
-from .coordinator import PopurCoordinator
+from .coordinator import PopurCoordinator, async_close_events
 from .transport import CloudHttpTransport
 
 _LOGGER = logging.getLogger(__name__)
@@ -210,17 +210,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
                     coordinator.push_dps, event.dev_id, dict(event.dps)
                 )
 
+        def _on_error(topic: str, code: str, message: str) -> None:
+            # Undecodable frames, dedup repeats and connect errors: without
+            # this they are dropped silently.
+            _LOGGER.debug("Popur MQTT error on %s: %s %s", topic, code, message)
+
         entry_data.events = account.connect_events(
             devices=local_keys,
             on_event=_on_event,
+            on_error=_on_error,
             on_connect=coordinator.request_refresh,
         )
-        await entry_data.events.connect()
-        coordinator.events = entry_data.events
-        _LOGGER.debug("Popur MQTT events connected")
     except Exception as err:  # noqa: BLE001 — realtime is best-effort; polling still works
         _LOGGER.warning("Popur realtime events unavailable, polling only: %s", err)
-        entry_data.events = None
+        return True
+
+    # Hand the session to the coordinator even if this first connect
+    # fails: the polling tick keeps retrying it.
+    coordinator.events = entry_data.events
+    try:
+        await entry_data.events.connect()
+    except Exception as err:  # noqa: BLE001 — retried from the polling tick
+        _LOGGER.warning("Popur realtime events not connected yet, retrying: %s", err)
+    else:
+        _LOGGER.debug("Popur MQTT events connected")
 
     return True
 
@@ -229,11 +242,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> bo
     entry.runtime_data.coordinator.cancel_record_fetch()
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         data = entry.runtime_data
+        # Detach the session from the coordinator first: a refresh still
+        # running then cannot start a reconnect, and a reconnect already in
+        # its handshake closes the session itself once it sees this.
+        data.coordinator.events = None
         if data.events is not None:
-            try:
-                await data.events.close()
-            except Exception:
-                _LOGGER.debug("Popur MQTT close failed", exc_info=True)
+            await async_close_events(data.events)
         for client in data.clients.values():
             await client.close()
     return unload_ok
