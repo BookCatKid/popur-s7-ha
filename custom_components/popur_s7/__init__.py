@@ -246,6 +246,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> bo
         # running then cannot start a reconnect, and a reconnect already in
         # its handshake closes the session itself once it sees this.
         data.coordinator.events = None
+        await data.coordinator.async_wait_mqtt_reconnect()
         if data.events is not None:
             await async_close_events(data.events)
         for client in data.clients.values():

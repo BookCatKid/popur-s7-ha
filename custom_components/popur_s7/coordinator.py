@@ -144,6 +144,13 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
 
     async def _async_update_data(self) -> PopurRuntimeData:
         data = PopurRuntimeData()
+        # Before the device refresh, which may raise: a failing poll must
+        # not also keep real-time events down.
+        data.mqtt_connected = bool(
+            self.events is not None and self.events.connected
+        )
+        if self.events is not None and not data.mqtt_connected:
+            self._kick_mqtt_reconnect()
         for dev_id, client in self.clients.items():
             try:
                 snapshot = await client.refresh()
@@ -151,11 +158,6 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
                 raise UpdateFailed(f"device {dev_id} refresh failed: {err}") from err
             data.snapshots[dev_id] = self._apply_shadow(dev_id, snapshot)
             data.transports[dev_id] = self.transport_state(dev_id)
-        data.mqtt_connected = bool(
-            self.events is not None and self.events.connected
-        )
-        if self.events is not None and not data.mqtt_connected:
-            self._kick_mqtt_reconnect()
 
         # Cloud tier: carry forward previous cloud-side state, refresh on
         # the slow cadence so routine polling stays off Popur's servers.
@@ -188,6 +190,20 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         self._mqtt_reconnect_task = self.hass.async_create_background_task(
             self._async_reconnect_events(self.events), "popur mqtt reconnect"
         )
+
+    async def async_wait_mqtt_reconnect(self) -> None:
+        """Wait for a reconnect still in its handshake.
+
+        Unload calls this once the session is detached: the reconnect then
+        closes its session and drops it from pypopur's shared manager
+        before the entry can be set up again. Done later, that cleanup
+        would unsubscribe the topics of the new entry's session."""
+
+        task = self._mqtt_reconnect_task
+        if task is not None and not task.done():
+            # wait() neither raises the task's outcome nor swallows a
+            # cancellation of the unload itself.
+            await asyncio.wait([task])
 
     async def _async_reconnect_events(self, events: Any) -> None:
         if events is None or self.events is not events:
