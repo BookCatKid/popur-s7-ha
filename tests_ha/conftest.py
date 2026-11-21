@@ -126,7 +126,9 @@ class FakePopur:
             has_next=start + page_size < len(newest_first),
         )
 
-    def _connect_events(self, *, devices, on_event, on_connect) -> FakeEvents:
+    def _connect_events(
+        self, *, devices, on_event, on_connect, on_error=None
+    ) -> FakeEvents:
         self.events = FakeEvents(on_event, on_connect, self._on_connected)
         return self.events
 
