@@ -120,47 +120,37 @@ class _SdkEvents:
         await asyncio.to_thread(self.client.close)
 
 
-async def test_polling_does_not_overlap_sdk_link_loss_reconnect(
+async def test_polling_does_not_schedule_parallel_sdk_reconnect(
     hass: HomeAssistant, setup_entry: Any, socket_enabled: None
 ) -> None:
-    """When MQTT drops, HA polling must not open a parallel wire handshake.
+    """Do not start another connect while the pinned SDK is reconnecting.
 
-    pypopur 0.1.3 automatically reconnects from the socket reader thread.
-    The coordinator also polls periodically. With the real SDK, this must
-    never result in two simultaneous socket connection attempts.
+    pypopur 0.1.3 reconnects on its socket reader thread, but its connect()
+    is not synchronized across callers. Scheduling a coordinator reconnect
+    during that handshake creates a second unsynchronized connect attempt.
+    Check that scheduling decision directly, not its execution timing.
     """
     broker = _LocalMqttBroker()
     attempts = 0
-    active_reconnects = 0
-    max_active_reconnects = 0
     attempt_lock = threading.Lock()
     reconnect_started = threading.Event()
-    overlapping_connections = threading.Event()
     release_reconnect = threading.Event()
 
     def socket_factory(host: str, port: int, timeout: float) -> socket.socket:
-        nonlocal attempts, active_reconnects, max_active_reconnects
+        nonlocal attempts
         with attempt_lock:
             attempts += 1
             reconnect = attempts > 1
             if reconnect:
-                active_reconnects += 1
-                max_active_reconnects = max(max_active_reconnects, active_reconnects)
                 reconnect_started.set()
-                if active_reconnects > 1:
-                    overlapping_connections.set()
-        try:
-            if reconnect:
-                if not release_reconnect.wait(timeout=10):
-                    raise TimeoutError("reconnect was not released")
-                # Keep the simulated network unavailable. The test needs
-                # to count competing handshakes, not launch another reader.
-                raise OSError("simulated network outage")
-            return socket.create_connection((host, port), timeout=timeout)
-        finally:
-            if reconnect:
-                with attempt_lock:
-                    active_reconnects -= 1
+
+        if reconnect:
+            if not release_reconnect.wait(timeout=10):
+                raise TimeoutError("reconnect was not released")
+            # Keep the simulated network unavailable so another client
+            # cannot make the retry succeed before the test checks it.
+            raise OSError("simulated network outage")
+        return socket.create_connection((host, port), timeout=timeout)
 
     mqtt_client = MqttWireClient(
         MqttServerManager("ha-mqtt-regression"),
@@ -186,29 +176,32 @@ async def test_polling_does_not_overlap_sdk_link_loss_reconnect(
         assert await asyncio.to_thread(reconnect_started.wait, 5)
         assert not events.connected
 
-        # This executes the real coordinator refresh. If the integration
-        # retries MQTT while the SDK already has a handshake in flight,
-        # the second socket_factory invocation raises the overlap count.
+        # The old SDK is already reconnecting. A coordinator retry task
+        # must not be created while this handshake remains in progress:
+        # otherwise two unsynchronized connect() calls can race. This
+        # assertion is deliberately against the independent main branch;
+        # main does not yet implement a coordinator retry at all.
         await coordinator.async_refresh()
-        if getattr(coordinator, "_mqtt_reconnect_task", None) is not None:
-            await asyncio.wait_for(events.poll_connect_started.wait(), timeout=2)
-            # The SDK may serialize a second caller before it reaches the
-            # socket factory. Give an unsynchronized caller a bounded
-            # opportunity to expose the overlap without relying on sleep.
-            assert not await asyncio.to_thread(overlapping_connections.wait, 0.5)
-
-        assert max_active_reconnects == 1, (
-            "Home Assistant and the SDK started overlapping MQTT handshakes"
+        assert getattr(coordinator, "_mqtt_reconnect_task", None) is None, (
+            "the coordinator scheduled a duplicate connect during SDK recovery"
         )
+        assert not events.poll_connect_started.is_set()
+        assert attempts == 2  # initial connection + the SDK's own reconnect
     finally:
         coordinator.events = None
         release_reconnect.set()
-        task = getattr(coordinator, "_mqtt_reconnect_task", None)
-        if task is not None:
-            await asyncio.wait_for(asyncio.shield(task), timeout=10)
-        await events.close()
-        pinger = mqtt_client._pinger
-        if pinger is not None:
-            await asyncio.to_thread(pinger.join, 2)
-            assert not pinger.is_alive()
-        broker.close()
+        try:
+            task = getattr(coordinator, "_mqtt_reconnect_task", None)
+            if task is not None:
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        finally:
+            try:
+                await events.close()
+            finally:
+                try:
+                    pinger = mqtt_client._pinger
+                    if pinger is not None:
+                        await asyncio.to_thread(pinger.join, 2)
+                        assert not pinger.is_alive()
+                finally:
+                    broker.close()
