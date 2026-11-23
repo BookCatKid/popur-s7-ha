@@ -105,6 +105,9 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         self._record_fetch_task: asyncio.Task[None] | None = None
         self._record_fetch_attempt = 0
         self._mqtt_reconnect_task: asyncio.Task[None] | None = None
+        # Once connected, the SDK owns retries after link loss. Only an
+        # initial handshake failure needs a retry from the HA polling tick.
+        self._needs_initial_mqtt_reconnect = False
         # Pet records are fetched by both the slow tier and the delayed
         # post-``cat_left`` fetch; the lock serializes them so one record
         # is never dispatched twice.
@@ -149,7 +152,9 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         data.mqtt_connected = bool(
             self.events is not None and self.events.connected
         )
-        if self.events is not None and not data.mqtt_connected:
+        if data.mqtt_connected:
+            self._needs_initial_mqtt_reconnect = False
+        elif self.events is not None and self._needs_initial_mqtt_reconnect:
             self._kick_mqtt_reconnect()
         for dev_id, client in self.clients.items():
             try:
@@ -176,14 +181,15 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         return data
 
     def _kick_mqtt_reconnect(self) -> None:
-        """Retry a down MQTT session from the polling tick.
+        """Retry an initial MQTT connection failure without blocking polling.
 
-        pypopur 0.1.3 retries once after a link loss and then never again,
-        and nothing retries a session whose first connect failed, so pushes
-        would stop for good. ``events.connect()`` reconnects and
-        re-SUBSCRIBEs; one attempt runs at a time, in the background, so
-        the refresh is never held up by the TLS handshake."""
+        Once a session has connected, pypopur 0.1.4 handles link-loss
+        reconnects itself. Starting another connect here would compete
+        with the SDK's reader-thread reconnect attempt.
+        """
 
+        if not self._needs_initial_mqtt_reconnect or self.events is None:
+            return
         if self._mqtt_reconnect_task is not None and not self._mqtt_reconnect_task.done():
             return
         _LOGGER.debug("Popur MQTT down, reconnecting")
@@ -194,10 +200,10 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
     async def async_wait_mqtt_reconnect(self) -> None:
         """Wait for a reconnect still in its handshake.
 
-        Unload calls this once the session is detached: the reconnect then
-        closes its session and drops it from pypopur's shared manager
-        before the entry can be set up again. Done later, that cleanup
-        would unsubscribe the topics of the new entry's session."""
+        Unload first detaches the session, then waits here for any initial
+        connect handshake to finish. Unload itself closes the old session
+        before the entry can be set up again, preventing stale subscription
+        cleanup from affecting the replacement."""
 
         task = self._mqtt_reconnect_task
         if task is not None and not task.done():
@@ -214,11 +220,12 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
             _LOGGER.debug("Popur MQTT reconnect failed: %s", err)
             return
         if self.events is not events:
-            # The entry unloaded during the handshake: do not leave this
-            # session running behind it.
-            await async_close_events(events)
+            # Unload waits for this handshake before closing the session;
+            # it owns the single close and subscription cleanup.
             return
-        _LOGGER.debug("Popur MQTT reconnected")
+        if events.connected:
+            self._needs_initial_mqtt_reconnect = False
+            _LOGGER.debug("Popur MQTT connected after initial failure")
 
     async def _async_refresh_cloud(self, data: PopurRuntimeData) -> None:
         """Slow tier: device DP shadow + pets + latest usage records."""
@@ -552,31 +559,9 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
 
 
 async def async_close_events(events: Any) -> None:
-    """Close an MQTT session and drop it from pypopur's shared manager."""
+    """Close MQTT; pypopur 0.1.4 removes its own manager subscriptions."""
 
     try:
         await events.close()
     except Exception:  # noqa: BLE001 — closing is best-effort
         _LOGGER.debug("Popur MQTT close failed", exc_info=True)
-    detach_events(events)
-
-
-def detach_events(events: Any) -> None:
-    """Drop this session's state from pypopur's process-wide MQTT manager.
-
-    ``MqttServerManager`` is a singleton per tag that outlives the config
-    entry. pypopur 0.1.3 leaves this entry's topics marked subscribed and
-    its listener registered after ``close()``, so after a reload the new
-    session never SUBSCRIBEs and receives no push at all. Harmless once
-    pypopur cleans up on close itself.
-
-    TODO: remove once the pypopur requirement includes that cleanup."""
-
-    manager = getattr(events, "manager", None)
-    if manager is None:
-        return
-    listener = getattr(events, "listener", None)
-    if listener in manager.message_listeners:
-        manager.message_listeners.remove(listener)
-    for topic in list(getattr(events, "_subscriptions", ())):
-        manager.mark_unsubscribe(topic)

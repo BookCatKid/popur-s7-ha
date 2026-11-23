@@ -10,12 +10,14 @@ from homeassistant.core import HomeAssistant
 from .conftest import FakePopur
 
 
-async def test_failing_poll_still_reconnects_mqtt(
+async def test_failing_poll_still_retries_failed_initial_mqtt_connect(
     hass: HomeAssistant, popur: FakePopur, setup_entry
 ) -> None:
     coordinator = setup_entry.runtime_data.coordinator
     events = popur.events
     assert events is not None
+    # Simulate the initial setup handshake failing before any reader exists.
+    coordinator._needs_initial_mqtt_reconnect = True
     events.connected = False
     connects: list[int] = []
 
@@ -32,6 +34,7 @@ async def test_failing_poll_still_reconnects_mqtt(
     assert not coordinator.last_update_success
     assert connects == [1]
     assert events.connected
+    assert not coordinator._needs_initial_mqtt_reconnect
 
 
 async def test_unload_waits_for_a_reconnect_in_its_handshake(
@@ -44,6 +47,7 @@ async def test_unload_waits_for_a_reconnect_in_its_handshake(
     coordinator = setup_entry.runtime_data.coordinator
     events = popur.events
     assert events is not None
+    coordinator._needs_initial_mqtt_reconnect = True
     events.connected = False
     release = asyncio.Event()
     ops: list[str] = []
@@ -71,7 +75,28 @@ async def test_unload_waits_for_a_reconnect_in_its_handshake(
 
     release.set()
     assert await unload
-    # The reconnect closed its own session, then unload closed it again;
-    # nothing is left to run after unload.
-    assert ops == ["connect", "close", "close"]
+    # Unload owns the single close after the in-flight handshake finishes.
+    assert ops == ["connect", "close"]
     assert coordinator._mqtt_reconnect_task.done()
+
+
+async def test_sdk_owns_recovery_after_a_successful_initial_connect(
+    hass: HomeAssistant, popur: FakePopur, setup_entry
+) -> None:
+    """Polling must not call connect while the SDK reconnects its own reader."""
+    coordinator = setup_entry.runtime_data.coordinator
+    events = popur.events
+    assert events is not None
+    assert not coordinator._needs_initial_mqtt_reconnect
+
+    events.connected = False
+    connect = AsyncMock()
+    events.connect = connect
+    popur.client.refresh = AsyncMock(side_effect=OSError("device unreachable"))
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert not coordinator.last_update_success
+    connect.assert_not_awaited()
+    assert coordinator._mqtt_reconnect_task is None

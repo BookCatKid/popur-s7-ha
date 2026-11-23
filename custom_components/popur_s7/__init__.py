@@ -225,12 +225,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         _LOGGER.warning("Popur realtime events unavailable, polling only: %s", err)
         return True
 
-    # Hand the session to the coordinator even if this first connect
-    # fails: the polling tick keeps retrying it.
+    # Hand the session to the coordinator even if the initial connect fails.
+    # The coordinator only retries that first handshake; after a successful
+    # connection pypopur owns subsequent link-loss recovery.
     coordinator.events = entry_data.events
     try:
         await entry_data.events.connect()
     except Exception as err:  # noqa: BLE001 — retried from the polling tick
+        coordinator._needs_initial_mqtt_reconnect = True
         _LOGGER.warning("Popur realtime events not connected yet, retrying: %s", err)
     else:
         _LOGGER.debug("Popur MQTT events connected")
