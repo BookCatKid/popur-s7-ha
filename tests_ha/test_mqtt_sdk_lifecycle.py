@@ -123,12 +123,12 @@ class _SdkEvents:
 async def test_polling_does_not_schedule_parallel_sdk_reconnect(
     hass: HomeAssistant, setup_entry: Any, socket_enabled: None
 ) -> None:
-    """Do not start another connect while the pinned SDK is reconnecting.
+    """The coordinator must not compete with the SDK's reconnect loop.
 
-    pypopur 0.1.3 reconnects on its socket reader thread, but its connect()
-    is not synchronized across callers. Scheduling a coordinator reconnect
-    during that handshake creates a second unsynchronized connect attempt.
-    Check that scheduling decision directly, not its execution timing.
+    pypopur 0.1.4 retries link losses on its reader thread. The SDK now
+    serializes connect attempts, but a second HA-managed retry would still
+    be redundant and could interfere with recovery. Check that HA does not
+    even schedule a competing attempt.
     """
     broker = _LocalMqttBroker()
     attempts = 0
@@ -163,6 +163,7 @@ async def test_polling_does_not_schedule_parallel_sdk_reconnect(
         ),
         _Credentials(),
         sock_factory=socket_factory,
+        reconnect_backoff=(0.05, 0.2),
     )
     events = _SdkEvents(mqtt_client)
     coordinator = setup_entry.runtime_data.coordinator
@@ -176,11 +177,8 @@ async def test_polling_does_not_schedule_parallel_sdk_reconnect(
         assert await asyncio.to_thread(reconnect_started.wait, 5)
         assert not events.connected
 
-        # The old SDK is already reconnecting. A coordinator retry task
-        # must not be created while this handshake remains in progress:
-        # otherwise two unsynchronized connect() calls can race. This
-        # assertion is deliberately against the independent main branch;
-        # main does not yet implement a coordinator retry at all.
+        # The SDK is already reconnecting. HA must not schedule an
+        # independent retry of the same MQTT session.
         await coordinator.async_refresh()
         assert getattr(coordinator, "_mqtt_reconnect_task", None) is None, (
             "the coordinator scheduled a duplicate connect during SDK recovery"
