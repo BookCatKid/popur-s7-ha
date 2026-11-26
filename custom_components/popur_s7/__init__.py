@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.typing import ConfigType
 
 from pypopur.client import PopurClient
@@ -25,7 +26,13 @@ from pypopur.mobile import (
 )
 from pypopur.transport import FallbackTransport, PopurTransport
 
-from .const import CONF_HOST, CONF_INSTALL_ID, DOMAIN, LOCAL_REFRESH_INTERVAL
+from .const import (
+    CONF_DISCOVERED_HOSTS,
+    CONF_HOST,
+    CONF_INSTALL_ID,
+    DOMAIN,
+    LOCAL_REFRESH_INTERVAL,
+)
 from .coordinator import PopurCoordinator, async_close_events
 from .transport import CloudHttpTransport
 
@@ -62,16 +69,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _local_transport(
-    device: AccountDevice, host_override: str | None
+    device: AccountDevice, host_override: str | None, discovered_host: str | None = None
 ) -> LocalTuyaTransport | None:
-    """Build the LAN transport for one device — explicit host first, then
-    ARP/neigh by the cloud-recorded MAC, then a port-6668 subnet probe.
+    """Find a LAN transport, retaining a discovered host for later retries.
 
-    Candidates are connect-verified (the handshake checks local_key +
-    devId), but a transport is returned even when every probe fails: the
-    S7 accepts a single LAN session at a time, so a momentarily-busy
-    device must stay retryable via FallbackTransport rather than pin the
-    entry to the cloud until the next reload."""
+    Return the first candidate if every connection fails so FallbackTransport
+    can retry when the device comes online."""
 
     if not device.local_key:
         return None
@@ -79,8 +82,12 @@ async def _local_transport(
     if host_override:
         candidates.append(host_override)
     else:
+        if discovered_host:
+            candidates.append(discovered_host)
         try:
-            candidates = await find_lan_hosts(device.mac)
+            candidates.extend(
+                host for host in await find_lan_hosts(device.mac) if host not in candidates
+            )
         except Exception:
             _LOGGER.debug("LAN host scan failed", exc_info=True)
     first: LocalTuyaTransport | None = None
@@ -148,10 +155,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         )
         host_override = None
 
+    discovered_hosts = entry.data.get(CONF_DISCOVERED_HOSTS, {})
     clients: dict[str, PopurClient] = {}
     for device in devices:
         cloud: PopurTransport = CloudHttpTransport(account, device.device_id)
-        local = await _local_transport(device, host_override)
+        discovered_host = (
+            discovered_hosts.get(format_mac(device.mac)) if device.mac else None
+        )
+        local = await _local_transport(device, host_override, discovered_host)
         transport: PopurTransport = (
             FallbackTransport(local, cloud) if local is not None else cloud
         )
@@ -163,7 +174,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         home_id,
         clients,
         LOCAL_REFRESH_INTERVAL,
-        devices={d.device_id: d for d in devices},
     )
     await coordinator.async_config_entry_first_refresh()
 

@@ -13,7 +13,7 @@ jobs:
       - name: Install
         run: |
           pip install -r requirements-test.txt
-          pip install "pypopur==0.1.4"
+          pip install "pypopur==0.1.5"
       - name: Lint
         run: ruff check custom_components tests_ha
       - name: Test

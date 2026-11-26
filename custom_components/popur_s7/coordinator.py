@@ -20,8 +20,6 @@ from homeassistant.util import dt as dt_util
 
 from pypopur import decode_snapshot
 from pypopur.activity import ActivityEvent, extract_activity_events
-from pypopur.discovery import find_lan_hosts
-from pypopur.local import LocalTuyaTransport
 from pypopur.models import DeviceSnapshot
 from pypopur.reads import Pet, PetRecord
 from pypopur.transport import FallbackTransport
@@ -81,7 +79,6 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         clients: dict[str, PopurClient],
         refresh_interval,
         events: Any = None,
-        devices: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -93,7 +90,6 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
         self.home_id = home_id
         self.clients = clients
         self.events = events
-        self._devices = devices or {}
         # Static metadata populated during setup for entity/device-info use.
         self.install_id: str = ""
         self.firmware_versions: dict[str, str | None] = {}
@@ -183,7 +179,7 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
     def _kick_mqtt_reconnect(self) -> None:
         """Retry an initial MQTT connection failure without blocking polling.
 
-        Once a session has connected, pypopur 0.1.4 handles link-loss
+        Once a session has connected, pypopur handles link-loss
         reconnects itself. Starting another connect here would compete
         with the SDK's reader-thread reconnect attempt.
         """
@@ -229,50 +225,6 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
 
     async def _async_refresh_cloud(self, data: PopurRuntimeData) -> None:
         """Slow tier: device DP shadow + pets + latest usage records."""
-
-        # Re-locate devices whose LAN channel is down — DHCP may have
-        # moved them; a fresh candidate swaps into the fallback transport.
-        for dev_id, client in self.clients.items():
-            transport = getattr(client, "transport", None)
-            device = self._devices.get(dev_id)
-            if (
-                not isinstance(transport, FallbackTransport)
-                or transport.active == "primary"
-                or device is None
-                or not device.local_key
-            ):
-                continue
-            try:
-                candidates = await find_lan_hosts(device.mac)
-            except Exception:
-                _LOGGER.debug("LAN re-scan failed for %s", dev_id, exc_info=True)
-                continue
-            for host in candidates:
-                if host == getattr(
-                    getattr(transport.primary, "config", None), "host", None
-                ):
-                    break  # current host still looks best; keep retrying it
-                probe = LocalTuyaTransport(
-                    host, dev_id, device.local_key, timeout=4.0
-                )
-                try:
-                    await probe.connect()
-                except Exception as err:  # noqa: BLE001 — next candidate
-                    _LOGGER.debug("re-scan connect to %s failed: %s", host, err)
-                    continue
-                _LOGGER.info(
-                    "Popur %s rediscovered at %s (pv %s) — switching to LAN",
-                    dev_id,
-                    host,
-                    probe.protocol_version,
-                )
-                old, transport.primary = transport.primary, probe
-                transport.reset_backoff()
-                try:
-                    await old.close()
-                except Exception:
-                    _LOGGER.debug("old LAN transport close failed", exc_info=True)
-                break
 
         for dev_id in self.clients:
             try:
@@ -559,7 +511,7 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
 
 
 async def async_close_events(events: Any) -> None:
-    """Close MQTT; pypopur 0.1.4 removes its own manager subscriptions."""
+    """Close MQTT; pypopur removes its own manager subscriptions."""
 
     try:
         await events.close()

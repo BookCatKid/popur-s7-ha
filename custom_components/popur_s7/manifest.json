@@ -8,6 +8,9 @@
   "config_flow": true,
   "dhcp": [
     {
+      "registered_devices": true
+    },
+    {
       "macaddress": "00337A*"
     }
   ],
@@ -19,7 +22,7 @@
     "pypopur"
   ],
   "requirements": [
-    "pypopur==0.1.4"
+    "pypopur==0.1.5"
   ],
   "version": "0.3.3"
 }

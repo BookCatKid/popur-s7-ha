@@ -23,7 +23,7 @@ Controls the Popur S7 via LAN (preferred) and cloud (fallback/settings/pets). Bu
 - **Pet tracking** — per-pet weight, visit duration, and last-visit sensors
 - **Full entity coverage** — 18 sensors, 5 binary sensors, 2 event entities, 19 switches, 14 buttons, 3 selects, 5 numbers per device
 - **Cloud fallback** — automatic fallback to cloud APIs when LAN is unreachable; settings DPs and pet data always via cloud
-- **Auto-discovery** — finds the S7 on the LAN via ARP MAC match + port scan; optional explicit host override
+- **Auto-discovery** — finds the S7 at setup and rediscovers it when Home Assistant receives a DHCP address-change announcement. Optional fixed host.
 
 <!-- ha-marketplace:exclude-start -->
 ## Install via Marketplace or HACS
@@ -54,7 +54,9 @@ Restart Home Assistant, then add the integration.
 | **Email** | Yes | Popur app account email |
 | **Password** | Yes | Popur app account password |
 | **Install ID** | No | App-install identity — leave blank to auto-generate (recommended) |
-| **LAN Host** | No | Explicit device IP — leave blank to auto-discover |
+| **LAN Host** | No | Fixed device IP for single-device setups. Leave blank for automatic discovery. |
+
+To switch an entry to automatic LAN discovery, choose **Reconfigure** and clear **Device IP**.
 | **Poll Interval** | No | LAN poll interval in seconds (default: 60, min: 15) |
 
 ## Entities

@@ -48,7 +48,7 @@ class PopurInfoSensorDescription(SensorEntityDescription):
 
 def _lan_ip(client) -> str | None:
     transport = getattr(client, "transport", None)
-    config = getattr(getattr(transport, "primary", None), "_config", None)
+    config = getattr(getattr(transport, "primary", None), "config", None)
     return getattr(config, "host", None)
 
 

@@ -7,6 +7,7 @@ DOMAIN: Final = "popur_s7"
 
 CONF_INSTALL_ID: Final = "install_id"
 CONF_HOST: Final = "host"
+CONF_DISCOVERED_HOSTS: Final = "discovered_hosts"
 
 # Live device state refresh over the local channel; MQTT pushes cover
 # real-time changes, this catches anything that is never pushed.
