@@ -24,6 +24,7 @@ from pypopur.mobile import (
 from pypopur.transport import FallbackTransport
 
 from .const import (
+    CONF_DISCOVERED_HOSTS,
     CONF_HOST,
     CONF_INSTALL_ID,
     DOMAIN,
@@ -58,24 +59,39 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             }
             for entry in entries:
-                if entry.state is not ConfigEntryState.LOADED:
-                    if entry.setup_lock.locked() and entry.entry_id in registered_entries:
-                        self.hass.config_entries.async_schedule_reload(entry.entry_id)
-                    continue
-                runtime = entry.runtime_data
-                devices = runtime.account_devices
-                if len(devices) == 1 and entry.data.get(CONF_HOST):
-                    continue
-                for device in devices:
-                    if not device.local_key or not device.mac or format_mac(device.mac) != mac:
+                if entry.state is ConfigEntryState.LOADED:
+                    runtime = entry.runtime_data
+                    devices = runtime.account_devices
+                    if len(devices) == 1 and entry.data.get(CONF_HOST):
                         continue
-                    transport = runtime.clients[device.device_id].transport
-                    if (
-                        not isinstance(transport, FallbackTransport)
-                        or transport.primary.config.host != discovery_info.ip
-                    ):
-                        self.hass.config_entries.async_schedule_reload(entry.entry_id)
-                    break
+                    for device in devices:
+                        if not device.local_key or not device.mac or format_mac(device.mac) != mac:
+                            continue
+                        transport = runtime.clients[device.device_id].transport
+                        reload = (
+                            not isinstance(transport, FallbackTransport)
+                            or transport.primary.config.host != discovery_info.ip
+                        )
+                        break
+                    else:
+                        continue
+                elif entry.entry_id in registered_entries and not entry.data.get(CONF_HOST):
+                    reload = entry.setup_lock.locked()
+                else:
+                    continue
+
+                hosts = entry.data.get(CONF_DISCOVERED_HOSTS, {})
+                changed = hosts.get(mac) != discovery_info.ip
+                if changed:
+                    self.hass.config_entries.async_update_entry(
+                        entry,
+                        data={
+                            **entry.data,
+                            CONF_DISCOVERED_HOSTS: {**hosts, mac: discovery_info.ip},
+                        },
+                    )
+                if reload and (changed or entry.state is ConfigEntryState.LOADED):
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
             return self.async_abort(reason="already_configured")
 
         if not mac.startswith("00:33:7a:"):

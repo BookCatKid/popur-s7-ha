@@ -26,7 +26,13 @@ from pypopur.mobile import (
 )
 from pypopur.transport import FallbackTransport, PopurTransport
 
-from .const import CONF_HOST, CONF_INSTALL_ID, DOMAIN, LOCAL_REFRESH_INTERVAL
+from .const import (
+    CONF_DISCOVERED_HOSTS,
+    CONF_HOST,
+    CONF_INSTALL_ID,
+    DOMAIN,
+    LOCAL_REFRESH_INTERVAL,
+)
 from .coordinator import PopurCoordinator, async_close_events
 from .transport import CloudHttpTransport
 
@@ -63,9 +69,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _local_transport(
-    device: AccountDevice, host_override: str | None, dhcp_host: str | None = None
+    device: AccountDevice, host_override: str | None, discovered_host: str | None = None
 ) -> LocalTuyaTransport | None:
-    """Find a LAN transport, retaining a DHCP candidate for later retries.
+    """Find a LAN transport, retaining a discovered host for later retries.
 
     Return the first candidate if every connection fails so FallbackTransport
     can retry when the device comes online."""
@@ -76,12 +82,14 @@ async def _local_transport(
     if host_override:
         candidates.append(host_override)
     else:
+        if discovered_host:
+            candidates.append(discovered_host)
         try:
-            candidates = await find_lan_hosts(device.mac)
+            candidates.extend(
+                host for host in await find_lan_hosts(device.mac) if host not in candidates
+            )
         except Exception:
             _LOGGER.debug("LAN host scan failed", exc_info=True)
-        if dhcp_host and dhcp_host not in candidates:
-            candidates.insert(0, dhcp_host)
     first: LocalTuyaTransport | None = None
     for host in candidates:
         transport = LocalTuyaTransport(
@@ -147,19 +155,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         )
         host_override = None
 
-    dhcp_hosts: dict[str, str] = {}
-    if "dhcp" in hass.config.components:
-        from homeassistant.components.dhcp import async_discovered_service_info
-
-        dhcp_hosts = {
-            format_mac(info.macaddress): info.ip
-            for info in async_discovered_service_info(hass)
-        }
+    discovered_hosts = entry.data.get(CONF_DISCOVERED_HOSTS, {})
     clients: dict[str, PopurClient] = {}
     for device in devices:
         cloud: PopurTransport = CloudHttpTransport(account, device.device_id)
-        dhcp_host = dhcp_hosts.get(format_mac(device.mac)) if device.mac else None
-        local = await _local_transport(device, host_override, dhcp_host)
+        discovered_host = (
+            discovered_hosts.get(format_mac(device.mac)) if device.mac else None
+        )
+        local = await _local_transport(device, host_override, discovered_host)
         transport: PopurTransport = (
             FallbackTransport(local, cloud) if local is not None else cloud
         )

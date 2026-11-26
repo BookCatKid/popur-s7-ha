@@ -13,7 +13,12 @@ from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.popur_s7.const import CONF_HOST, CONF_INSTALL_ID, DOMAIN
+from custom_components.popur_s7.const import (
+    CONF_DISCOVERED_HOSTS,
+    CONF_HOST,
+    CONF_INSTALL_ID,
+    DOMAIN,
+)
 from pypopur.mobile import AccountDevice
 from pypopur.transport import FallbackTransport
 
@@ -82,7 +87,7 @@ async def test_dhcp_change_reloads_with_fresh_lan_discovery(
         assert popur.client.transport.primary.config.host == NEW_IP
         assert scan.await_count == 2
         assert [call.args[0] for call in transports.call_args_list] == [OLD_IP, NEW_IP]
-        assert entry.data == DATA
+        assert entry.data == {**DATA, CONF_DISCOVERED_HOSTS: {MAC: NEW_IP}}
         tcp.assert_not_called()
         assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -99,6 +104,24 @@ async def test_unchanged_address_does_not_reload(
     with patch.object(hass.config_entries, "async_schedule_reload") as reload:
         assert (await discover(hass, ip=OLD_IP))["reason"] == "already_configured"
     reload.assert_not_called()
+
+
+async def test_remembered_address_reloads_stale_transport(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    entry = setup_entry
+    entry.runtime_data.account_devices[:] = [device()]
+    entry.runtime_data.clients[DEV_ID].transport = FallbackTransport(
+        SimpleNamespace(config=SimpleNamespace(host=OLD_IP)), SimpleNamespace()
+    )
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_DISCOVERED_HOSTS: {MAC: NEW_IP}}
+    )
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        assert (await discover(hass))["reason"] == "already_configured"
+    reload.assert_called_once_with(entry.entry_id)
+    assert entry.data[CONF_DISCOVERED_HOSTS] == {MAC: NEW_IP}
 
 
 async def test_cloud_only_device_rediscovered_on_dhcp(
@@ -191,8 +214,10 @@ async def test_dhcp_during_reload_is_not_discarded(
 
     with patch.object(hass.config_entries, "async_schedule_reload") as reload:
         async with entry.setup_lock:
-            assert (await discover(hass))["reason"] == "already_configured"
-    reload.assert_called_once_with(entry.entry_id)
+            assert (await discover(hass, ip=OLD_IP))["reason"] == "already_configured"
+            assert (await discover(hass, ip=NEW_IP))["reason"] == "already_configured"
+    assert reload.call_count == 2
+    assert entry.data[CONF_DISCOVERED_HOSTS] == {MAC: NEW_IP}
 
 
 async def test_dhcp_host_retained_when_scan_and_connect_fail(
@@ -202,7 +227,12 @@ async def test_dhcp_host_retained_when_scan_and_connect_fail(
     entry.add_to_hass(hass)
     popur.hass = hass
     popur.account.home_devices.return_value = [device()]
-    hass.config.components.add("dhcp")
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(CONNECTION_NETWORK_MAC, MAC)},
+    )
+    assert (await discover(hass))["reason"] == "already_configured"
+    assert entry.data[CONF_DISCOVERED_HOSTS] == {MAC: NEW_IP}
 
     def local(host, *_args, **_kwargs):
         return SimpleNamespace(
@@ -220,19 +250,14 @@ async def test_dhcp_host_retained_when_scan_and_connect_fail(
         patch("custom_components.popur_s7.MobileAppProfile"),
         patch("custom_components.popur_s7.PopurAccount", return_value=popur.account),
         patch("custom_components.popur_s7.PopurClient", side_effect=client),
-        patch("custom_components.popur_s7.LocalTuyaTransport", side_effect=local),
-        patch("custom_components.popur_s7.find_lan_hosts", return_value=[]) as scan,
-        patch(
-            "homeassistant.components.dhcp.async_discovered_service_info",
-            return_value=[
-                DhcpServiceInfo(ip=NEW_IP, macaddress=MAC.replace(":", ""), hostname="popur")
-            ],
-        ),
+        patch("custom_components.popur_s7.LocalTuyaTransport", side_effect=local) as transports,
+        patch("custom_components.popur_s7.find_lan_hosts", return_value=[OLD_IP]) as scan,
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert isinstance(popur.client.transport, FallbackTransport)
         assert popur.client.transport.primary.config.host == NEW_IP
+        assert [call.args[0] for call in transports.call_args_list] == [NEW_IP, OLD_IP]
         scan.assert_awaited_once_with(MAC)
         assert await hass.config_entries.async_unload(entry.entry_id)
 

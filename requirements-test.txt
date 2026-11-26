@@ -1,5 +1,2 @@
 pytest-homeassistant-custom-component>=0.13.375
 ruff
-aiodhcpwatcher==1.2.7
-aiodiscover==3.3.2
-cached-ipaddress==1.1.2
