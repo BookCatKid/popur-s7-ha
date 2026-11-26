@@ -55,6 +55,8 @@ Restart Home Assistant, then add the integration.
 | **Password** | Yes | Popur app account password |
 | **Install ID** | No | App-install identity — leave blank to auto-generate (recommended) |
 | **LAN Host** | No | Fixed device IP for single-device setups. Leave blank to let DHCP discovery track IP changes. |
+
+Older versions could save an auto-detected IP as a fixed host. To switch an existing entry back to automatic discovery, choose **Reconfigure** on the Popur S7 integration and clear **Device IP**. Existing fixed hosts are not changed automatically.
 | **Poll Interval** | No | LAN poll interval in seconds (default: 60, min: 15) |
 
 ## Entities

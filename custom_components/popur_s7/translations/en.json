@@ -1,6 +1,13 @@
 {
   "config": {
     "step": {
+      "reconfigure": {
+        "title": "Configure Popur S7 LAN address",
+        "description": "Leave the device IP empty to use automatic LAN discovery.",
+        "data": {
+          "host": "Device IP"
+        }
+      },
       "reauth_confirm": {
         "title": "Reauthenticate Popur S7",
         "description": "Enter the current password for {email}.",

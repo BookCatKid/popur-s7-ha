@@ -3,11 +3,14 @@
 from datetime import timedelta
 from typing import Final
 
+from homeassistant.util.hass_dict import HassKey
+
 DOMAIN: Final = "popur_s7"
 
 CONF_INSTALL_ID: Final = "install_id"
 CONF_HOST: Final = "host"
 CONF_DISCOVERED_HOSTS: Final = "discovered_hosts"
+DHCP_PROBE_TIMES: HassKey[dict[tuple[str, str], float]] = HassKey("popur_s7_dhcp_probe_times")
 
 # Live device state refresh over the local channel; MQTT pushes cover
 # real-time changes, this catches anything that is never pushed.
