@@ -179,7 +179,7 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
     def _kick_mqtt_reconnect(self) -> None:
         """Retry an initial MQTT connection failure without blocking polling.
 
-        Once a session has connected, pypopur 0.1.4 handles link-loss
+        Once a session has connected, pypopur handles link-loss
         reconnects itself. Starting another connect here would compete
         with the SDK's reader-thread reconnect attempt.
         """
@@ -511,7 +511,7 @@ class PopurCoordinator(DataUpdateCoordinator[PopurRuntimeData]):
 
 
 async def async_close_events(events: Any) -> None:
-    """Close MQTT; pypopur 0.1.4 removes its own manager subscriptions."""
+    """Close MQTT; pypopur removes its own manager subscriptions."""
 
     try:
         await events.close()
