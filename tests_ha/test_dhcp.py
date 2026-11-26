@@ -8,6 +8,8 @@ from homeassistant.config_entries import ConfigEntryState, SOURCE_DHCP, SOURCE_R
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -166,6 +168,72 @@ async def test_unloaded_entry_scans_lan_at_next_setup(
         await hass.async_block_till_done()
         scan.assert_awaited_once_with(MAC)
         transport.assert_called_once_with(NEW_IP, DEV_ID, "k", timeout=5.0)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ConfigEntryState.SETUP_IN_PROGRESS,
+        ConfigEntryState.UNLOAD_IN_PROGRESS,
+        ConfigEntryState.NOT_LOADED,
+    ],
+)
+async def test_dhcp_during_reload_is_not_discarded(
+    hass: HomeAssistant, state: ConfigEntryState
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, unique_id="account-id", state=state)
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(CONNECTION_NETWORK_MAC, MAC)},
+    )
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        async with entry.setup_lock:
+            assert (await discover(hass))["reason"] == "already_configured"
+    reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_dhcp_host_retained_when_scan_and_connect_fail(
+    hass: HomeAssistant, popur: FakePopur
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data=DATA, unique_id="account-id")
+    entry.add_to_hass(hass)
+    popur.hass = hass
+    popur.account.home_devices.return_value = [device()]
+    hass.config.components.add("dhcp")
+
+    def local(host, *_args, **_kwargs):
+        return SimpleNamespace(
+            config=SimpleNamespace(host=host),
+            connect=AsyncMock(side_effect=TimeoutError),
+            close=AsyncMock(),
+        )
+
+    def client(transport):
+        popur.client.transport = transport
+        return popur.client
+
+    with (
+        patch("custom_components.popur_s7.ThingMobileApi"),
+        patch("custom_components.popur_s7.MobileAppProfile"),
+        patch("custom_components.popur_s7.PopurAccount", return_value=popur.account),
+        patch("custom_components.popur_s7.PopurClient", side_effect=client),
+        patch("custom_components.popur_s7.LocalTuyaTransport", side_effect=local),
+        patch("custom_components.popur_s7.find_lan_hosts", return_value=[]) as scan,
+        patch(
+            "homeassistant.components.dhcp.async_discovered_service_info",
+            return_value=[
+                DhcpServiceInfo(ip=NEW_IP, macaddress=MAC.replace(":", ""), hostname="popur")
+            ],
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert isinstance(popur.client.transport, FallbackTransport)
+        assert popur.client.transport.primary.config.host == NEW_IP
+        scan.assert_awaited_once_with(MAC)
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 

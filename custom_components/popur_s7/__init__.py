@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.typing import ConfigType
 
 from pypopur.client import PopurClient
@@ -62,16 +63,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _local_transport(
-    device: AccountDevice, host_override: str | None
+    device: AccountDevice, host_override: str | None, dhcp_host: str | None = None
 ) -> LocalTuyaTransport | None:
-    """Build the LAN transport for one device — explicit host first, then
-    ARP/neigh by the cloud-recorded MAC, then a port-6668 subnet probe.
+    """Find a LAN transport, retaining a DHCP candidate for later retries.
 
-    Candidates are connect-verified (the handshake checks local_key +
-    devId), but a transport is returned even when every probe fails: the
-    S7 accepts a single LAN session at a time, so a momentarily-busy
-    device must stay retryable via FallbackTransport rather than pin the
-    entry to the cloud until the next reload."""
+    Return the first candidate if every connection fails so FallbackTransport
+    can retry when the device comes online."""
 
     if not device.local_key:
         return None
@@ -83,6 +80,8 @@ async def _local_transport(
             candidates = await find_lan_hosts(device.mac)
         except Exception:
             _LOGGER.debug("LAN host scan failed", exc_info=True)
+        if dhcp_host and dhcp_host not in candidates:
+            candidates.insert(0, dhcp_host)
     first: LocalTuyaTransport | None = None
     for host in candidates:
         transport = LocalTuyaTransport(
@@ -148,10 +147,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         )
         host_override = None
 
+    dhcp_hosts: dict[str, str] = {}
+    if "dhcp" in hass.config.components:
+        from homeassistant.components.dhcp import async_discovered_service_info
+
+        dhcp_hosts = {
+            format_mac(info.macaddress): info.ip
+            for info in async_discovered_service_info(hass)
+        }
     clients: dict[str, PopurClient] = {}
     for device in devices:
         cloud: PopurTransport = CloudHttpTransport(account, device.device_id)
-        local = await _local_transport(device, host_override)
+        dhcp_host = dhcp_hosts.get(format_mac(device.mac)) if device.mac else None
+        local = await _local_transport(device, host_override, dhcp_host)
         transport: PopurTransport = (
             FallbackTransport(local, cloud) if local is not None else cloud
         )

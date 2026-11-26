@@ -11,7 +11,8 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, format_mac
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from pypopur.mobile import (
@@ -50,8 +51,16 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
         mac = format_mac(discovery_info.macaddress)
         entries = self._async_current_entries()
         if entries:
+            registered_entries = {
+                device.config_entry_id
+                for device in dr.async_get(self.hass).async_get_devices(
+                    connections={(CONNECTION_NETWORK_MAC, mac)}
+                )
+            }
             for entry in entries:
                 if entry.state is not ConfigEntryState.LOADED:
+                    if entry.setup_lock.locked() and entry.entry_id in registered_entries:
+                        self.hass.config_entries.async_schedule_reload(entry.entry_id)
                     continue
                 runtime = entry.runtime_data
                 devices = runtime.account_devices
