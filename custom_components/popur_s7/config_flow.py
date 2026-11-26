@@ -64,9 +64,12 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
             for entry in entries:
                 # Wait for setup/reload to finish before using runtime devices.
                 async with entry.setup_lock:
-                    if entry.state is not ConfigEntryState.LOADED:
+                    # A previous runtime can still identify the device while
+                    # an entry is unloading or waiting for its next setup.
+                    # Validated changes must not be discarded in that window.
+                    runtime = getattr(entry, "runtime_data", None)
+                    if runtime is None:
                         continue
-                    runtime = entry.runtime_data
                     devices = runtime.account_devices
                     if len(devices) == 1 and entry.data.get(CONF_HOST):
                         continue
@@ -130,12 +133,15 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
             with suppress(Exception):
                 await probe.close()
 
-        if entry.state is not ConfigEntryState.LOADED or entry.runtime_data is not runtime:
+        # A validated address can be stored even if the entry was unloaded
+        # while probing. Only schedule a reload when it is currently loaded;
+        # the next setup otherwise reads the updated mapping itself.
+        if entry.state is ConfigEntryState.LOADED and entry.runtime_data is not runtime:
             return
         hosts = {**entry.data.get(CONF_DISCOVERED_HOSTS, {}), mac: ip}
         if self.hass.config_entries.async_update_entry(
             entry, data={**entry.data, CONF_DISCOVERED_HOSTS: hosts}
-        ):
+        ) and entry.state is ConfigEntryState.LOADED:
             self.hass.config_entries.async_schedule_reload(entry.entry_id)
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

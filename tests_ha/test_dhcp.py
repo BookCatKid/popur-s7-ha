@@ -240,3 +240,26 @@ async def test_dhcp_waits_for_reload_lock(
         assert (await task)["reason"] == "already_configured"
     assert entry.data[CONF_DISCOVERED_HOSTS] == {MAC: NEW_IP}
     reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_verified_dhcp_address_survives_unloaded_entry(
+    hass: HomeAssistant, setup_entry: MockConfigEntry
+) -> None:
+    """An address change while unloaded is saved for the next setup."""
+    entry = setup_entry
+    runtime = entry.runtime_data
+    runtime.account_devices[:] = [
+        AccountDevice(device_id=DEV_ID, product_id="p", name="Litter", local_key="k", mac=MAC)
+    ]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    # An older runtime may still exist while unload/setup transitions occur.
+    entry.runtime_data = runtime
+    transport = SimpleNamespace(connect=AsyncMock(), close=AsyncMock(), protocol_version="3.5")
+    with (
+        patch("custom_components.popur_s7.config_flow.LocalTuyaTransport", return_value=transport),
+        patch.object(hass.config_entries, "async_schedule_reload") as reload,
+    ):
+        assert (await discover(hass))["reason"] == "already_configured"
+    assert entry.data[CONF_DISCOVERED_HOSTS] == {MAC: NEW_IP}
+    transport.connect.assert_awaited_once()
+    reload.assert_not_called()
