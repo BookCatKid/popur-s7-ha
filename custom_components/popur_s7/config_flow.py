@@ -8,10 +8,11 @@ import uuid
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from pypopur.mobile import (
     MobileAppProfile,
@@ -21,6 +22,7 @@ from pypopur.mobile import (
 )
 
 from .const import (
+    CONF_DISCOVERED_HOSTS,
     CONF_HOST,
     CONF_INSTALL_ID,
     DOMAIN,
@@ -44,12 +46,33 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        self._discovered_host: str = ""
+        self._discovered_hosts: dict[str, str] = {}
 
     async def async_step_dhcp(
         self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
-        """Handle a device matching the S7 MAC OUI appearing on DHCP."""
+        """Use DHCP to discover devices and update known LAN addresses."""
+        mac = format_mac(discovery_info.macaddress)
+        entries = self._async_current_entries()
+        if entries:
+            for entry in entries:
+                if entry.state is not ConfigEntryState.LOADED:
+                    continue
+                devices = entry.runtime_data.account_devices
+                if (len(devices) == 1 and entry.data.get(CONF_HOST)) or not any(
+                    device.local_key and device.mac and format_mac(device.mac) == mac
+                    for device in devices
+                ):
+                    continue
+                hosts = dict(entry.data.get(CONF_DISCOVERED_HOSTS, {}))
+                if hosts.get(mac) != discovery_info.ip:
+                    hosts[mac] = discovery_info.ip
+                    if self.hass.config_entries.async_update_entry(
+                        entry, data={**entry.data, CONF_DISCOVERED_HOSTS: hosts}
+                    ):
+                        self.hass.config_entries.async_schedule_reload(entry.entry_id)
+            return self.async_abort(reason="already_configured")
+
         # The OUI is not guaranteed Popur-exclusive, so confirm the Tuya LAN
         # port answers before surfacing the device as discovered.
         try:
@@ -62,8 +85,8 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
         except (OSError, TimeoutError):
             return self.async_abort(reason="not_popur_device")
 
-        self._discovered_host = discovery_info.ip
-        await self.async_set_unique_id(discovery_info.macaddress)
+        self._discovered_hosts[mac] = discovery_info.ip
+        await self.async_set_unique_id(mac)
         self._abort_if_unique_id_configured()
         if self._async_current_entries():
             return self.async_abort(reason="already_configured")
@@ -98,16 +121,14 @@ class PopurConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_EMAIL: email,
                         CONF_PASSWORD: password,
                         CONF_INSTALL_ID: install_id,
-                        CONF_HOST: (user_input.get(CONF_HOST) or "").strip()
-                        or self._discovered_host,
+                        CONF_HOST: (user_input.get(CONF_HOST) or "").strip(),
+                        CONF_DISCOVERED_HOSTS: self._discovered_hosts,
                     },
                 )
 
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(
-                STEP_USER_SCHEMA, {CONF_HOST: self._discovered_host}
-            ),
+            data_schema=STEP_USER_SCHEMA,
             errors=errors,
         )
 

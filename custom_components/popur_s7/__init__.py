@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.typing import ConfigType
 
 from pypopur.client import PopurClient
@@ -25,7 +26,13 @@ from pypopur.mobile import (
 )
 from pypopur.transport import FallbackTransport, PopurTransport
 
-from .const import CONF_HOST, CONF_INSTALL_ID, DOMAIN, LOCAL_REFRESH_INTERVAL
+from .const import (
+    CONF_DISCOVERED_HOSTS,
+    CONF_HOST,
+    CONF_INSTALL_ID,
+    DOMAIN,
+    LOCAL_REFRESH_INTERVAL,
+)
 from .coordinator import PopurCoordinator, async_close_events
 from .transport import CloudHttpTransport
 
@@ -49,7 +56,7 @@ class PopurEntryData:
     account: PopurAccount
     home_id: int | str
     coordinator: PopurCoordinator
-    account_devices: list[Any] = field(default_factory=list)
+    account_devices: list[AccountDevice] = field(default_factory=list)
     clients: dict[str, PopurClient] = field(default_factory=dict)
     events: Any = None
 
@@ -62,7 +69,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _local_transport(
-    device: AccountDevice, host_override: str | None
+    device: AccountDevice, host_override: str | None, discovered_host: str | None = None
 ) -> LocalTuyaTransport | None:
     """Build the LAN transport for one device — explicit host first, then
     ARP/neigh by the cloud-recorded MAC, then a port-6668 subnet probe.
@@ -78,6 +85,8 @@ async def _local_transport(
     candidates: list[str] = []
     if host_override:
         candidates.append(host_override)
+    elif discovered_host:
+        candidates.append(discovered_host)
     else:
         try:
             candidates = await find_lan_hosts(device.mac)
@@ -148,10 +157,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         )
         host_override = None
 
+    discovered_hosts = entry.data.get(CONF_DISCOVERED_HOSTS, {})
     clients: dict[str, PopurClient] = {}
     for device in devices:
         cloud: PopurTransport = CloudHttpTransport(account, device.device_id)
-        local = await _local_transport(device, host_override)
+        mac = format_mac(device.mac) if device.mac else None
+        local = await _local_transport(device, host_override, discovered_hosts.get(mac))
         transport: PopurTransport = (
             FallbackTransport(local, cloud) if local is not None else cloud
         )
@@ -163,7 +174,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         home_id,
         clients,
         LOCAL_REFRESH_INTERVAL,
-        devices={d.device_id: d for d in devices},
     )
     await coordinator.async_config_entry_first_refresh()
 
