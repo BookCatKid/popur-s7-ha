@@ -1,7 +1,6 @@
 {
   "domain": "popur_s7",
   "name": "Popur S7",
-  "after_dependencies": ["dhcp"],
   "categories": ["pets"],
   "codeowners": [
     "@BookCatKid"

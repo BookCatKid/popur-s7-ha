@@ -10,7 +10,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.typing import ConfigType
 
 from pypopur.client import PopurClient
@@ -26,13 +25,7 @@ from pypopur.mobile import (
 )
 from pypopur.transport import FallbackTransport, PopurTransport
 
-from .const import (
-    CONF_DISCOVERED_HOSTS,
-    CONF_HOST,
-    CONF_INSTALL_ID,
-    DOMAIN,
-    LOCAL_REFRESH_INTERVAL,
-)
+from .const import CONF_HOST, CONF_INSTALL_ID, DOMAIN, LOCAL_REFRESH_INTERVAL
 from .coordinator import PopurCoordinator, async_close_events
 from .transport import CloudHttpTransport
 
@@ -56,7 +49,7 @@ class PopurEntryData:
     account: PopurAccount
     home_id: int | str
     coordinator: PopurCoordinator
-    account_devices: list[AccountDevice] = field(default_factory=list)
+    account_devices: list[Any] = field(default_factory=list)
     clients: dict[str, PopurClient] = field(default_factory=dict)
     events: Any = None
 
@@ -69,11 +62,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _local_transport(
-    device: AccountDevice,
-    host_override: str | None,
-    discovered_host: str | None = None,
-    *,
-    announced_host: str | None = None,
+    device: AccountDevice, host_override: str | None
 ) -> LocalTuyaTransport | None:
     """Build the LAN transport for one device — explicit host first, then
     ARP/neigh by the cloud-recorded MAC, then a port-6668 subnet probe.
@@ -86,23 +75,26 @@ async def _local_transport(
 
     if not device.local_key:
         return None
+    candidates: list[str] = []
+    if host_override:
+        candidates.append(host_override)
+    else:
+        try:
+            candidates = await find_lan_hosts(device.mac)
+        except Exception:
+            _LOGGER.debug("LAN host scan failed", exc_info=True)
     first: LocalTuyaTransport | None = None
-
-    async def try_host(host: str, *, remember: bool = True) -> LocalTuyaTransport | None:
-        nonlocal first
+    for host in candidates:
         transport = LocalTuyaTransport(
             host, device.device_id, device.local_key, timeout=5.0
         )
-        if remember and first is None:
+        if first is None:
             first = transport
         try:
             await transport.connect()
-            if not remember and transport.protocol_version == "3.3":
-                await transport.close()
-                return None
         except Exception as err:  # noqa: BLE001 — try the next candidate
             _LOGGER.debug("local connect to %s failed: %s", host, err)
-            return None
+            continue
         _LOGGER.info(
             "Popur %s local channel up at %s (pv %s)",
             device.device_id,
@@ -110,28 +102,6 @@ async def _local_transport(
             transport.protocol_version,
         )
         return transport
-
-    checked: set[str] = set()
-    if not host_override and announced_host and announced_host != discovered_host:
-        checked.add(announced_host)
-        if connected := await try_host(announced_host, remember=False):
-            return connected
-    if preferred := host_override or discovered_host:
-        checked.add(preferred)
-        if connected := await try_host(preferred):
-            return connected
-
-    # Try discovery once at setup if a remembered DHCP address has gone stale.
-    if not host_override:
-        try:
-            candidates = await find_lan_hosts(device.mac)
-        except Exception:
-            _LOGGER.debug("LAN host scan failed", exc_info=True)
-        else:
-            for host in candidates:
-                if host not in checked and (connected := await try_host(host)):
-                    return connected
-
     if first is not None:
         _LOGGER.info(
             "Popur %s LAN unreachable at setup — will keep retrying %s",
@@ -178,23 +148,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: PopurConfigEntry) -> boo
         )
         host_override = None
 
-    discovered_hosts = entry.data.get(CONF_DISCOVERED_HOSTS, {})
-    announced_hosts: dict[str, str] = {}
-    if "dhcp" in hass.config.components:
-        from homeassistant.components.dhcp import async_discovered_service_info
-
-        # Includes announcements HA observed before or during this entry's setup.
-        announced_hosts.update(
-            (format_mac(info.macaddress), info.ip) for info in async_discovered_service_info(hass)
-        )
     clients: dict[str, PopurClient] = {}
     for device in devices:
         cloud: PopurTransport = CloudHttpTransport(account, device.device_id)
-        mac = format_mac(device.mac) if device.mac else None
-        local = await _local_transport(
-            device, host_override, discovered_hosts.get(mac),
-            announced_host=announced_hosts.get(mac) if mac else None,
-        )
+        local = await _local_transport(device, host_override)
         transport: PopurTransport = (
             FallbackTransport(local, cloud) if local is not None else cloud
         )
